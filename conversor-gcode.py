@@ -10,6 +10,82 @@ def parse_gcode_params(line):
         params[match[0]] = float(match[1])
     return params
 
+def convert_gcode_for_mach3(gcode_text):
+    """Converte G-code para Mach3: remove parâmetro K e adiciona rotinas de segurança."""
+    output_lines = []
+    lines = gcode_text.splitlines()
+    
+    initial_z = 15.0  # Altura Z segura padrão
+    spindle_speed = 1000  # RPM padrão do spindle
+    
+    # Detecta velocidade do spindle no código original
+    for line in lines:
+        if 'S' in line.upper():
+            params = parse_gcode_params(line)
+            if 'S' in params:
+                spindle_speed = int(params['S'])
+                break
+    
+    # Detecta altura Z inicial
+    for line in lines:
+        line_upper = line.strip().upper()
+        if line_upper.startswith('G0') and 'Z' in line_upper:
+            params = parse_gcode_params(line_upper)
+            if 'Z' in params:
+                if 'X' not in params and 'Y' not in params:
+                    initial_z = params['Z']
+                    break
+    
+    # Adiciona rotina de inicialização segura
+    output_lines.append("; ========================================\n")
+    output_lines.append("; Rotina de Inicialização Mach3\n")
+    output_lines.append("; ========================================\n")
+    output_lines.append("G21 ; Modo métrico (mm)\n")
+    output_lines.append("G90 ; Modo absoluto\n")
+    output_lines.append("G94 ; Avanço em mm/min\n")
+    output_lines.append("G17 ; Plano XY\n")
+    output_lines.append(f"M3 S{spindle_speed} ; Liga spindle a {spindle_speed} RPM\n")
+    output_lines.append("G4 P2.0 ; Aguarda 2 segundos para estabilizar\n")
+    output_lines.append("; ========================================\n")
+    output_lines.append("\n")
+    
+    # Processa cada linha removendo o parâmetro K
+    for line in lines:
+        line_stripped = line.strip()
+        
+        if not line_stripped:
+            continue
+        
+        # Remove comentários de linha inteira
+        if line_stripped.startswith('(') or line_stripped.startswith(';'):
+            output_lines.append(line + '\n')
+            continue
+        
+        line_upper = line_stripped.upper()
+        
+        # Verifica se é um comando de arco (G2 ou G3)
+        if 'G2' in line_upper or 'G3' in line_upper:
+            # Remove o parâmetro K da linha
+            # Usa regex para encontrar e remover K seguido de número
+            cleaned_line = re.sub(r'\s+K-?\d+\.?\d*', '', line_stripped, flags=re.IGNORECASE)
+            output_lines.append(cleaned_line + '\n')
+        else:
+            output_lines.append(line + '\n')
+    
+    # Adiciona rotina de retorno seguro ao final
+    output_lines.append("\n")
+    output_lines.append("; ========================================\n")
+    output_lines.append("; Rotina de Retorno Seguro para Home\n")
+    output_lines.append("; ========================================\n")
+    output_lines.append(f"G0 Z{initial_z:.6f} ; Sobe Z para altura segura\n")
+    output_lines.append("G0 X0.000000 Y0.000000 ; Move para X0 Y0\n")
+    output_lines.append("; Z permanece em altura segura para evitar colisão\n")
+    output_lines.append("M5 ; Desliga fuso\n")
+    output_lines.append("M30 ; Fim do programa\n")
+    output_lines.append("; ========================================\n")
+    
+    return "".join(output_lines)
+
 def convert_gcode_text(gcode_text):
     """Converte o texto do G-code, expandindo ciclos G73-G89."""
     output_lines = []
@@ -313,25 +389,56 @@ class GCodeConverterApp:
         self.text_out.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scroll_right.config(command=self.text_out.yview)
         
-        # Frame de botões
-        btn_frame = tk.Frame(root)
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Frame de botões - linha 1
+        btn_frame1 = tk.Frame(root)
+        btn_frame1.pack(fill=tk.X, padx=10, pady=(10, 5))
         
-        self.load_btn = tk.Button(btn_frame, text="Carregar Arquivo", command=self.load_file, 
-                                  font=('Helvetica', 12, 'bold'))
+        self.load_btn = tk.Button(btn_frame1, text="Carregar Arquivo", command=self.load_file, 
+                                  font=('Helvetica', 11, 'bold'))
         self.load_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
         
-        self.convert_btn = tk.Button(btn_frame, text="CONVERTER", command=self.convert, 
-                                     font=('Helvetica', 12, 'bold'))
-        self.convert_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
-        
-        self.save_btn = tk.Button(btn_frame, text="Salvar Arquivo", command=self.save_file, 
-                                  font=('Helvetica', 12, 'bold'))
+        self.save_btn = tk.Button(btn_frame1, text="Salvar Arquivo", command=self.save_file, 
+                                  font=('Helvetica', 11, 'bold'))
         self.save_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
         
-        self.clear_btn = tk.Button(btn_frame, text="Limpar", command=self.clear_fields, 
-                                   font=('Helvetica', 12, 'bold'))
+        self.clear_btn = tk.Button(btn_frame1, text="Limpar", command=self.clear_fields, 
+                                   font=('Helvetica', 11, 'bold'))
         self.clear_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.X, expand=True)
+        
+        # Frame de botões - linha 2 (conversões)
+        btn_frame2 = tk.Frame(root)
+        btn_frame2.pack(fill=tk.X, padx=10, pady=(5, 10))
+        
+        # Label explicativo
+        label_conv = tk.Label(btn_frame2, text="Escolha o tipo de conversão:", 
+                             font=('Helvetica', 10))
+        label_conv.pack(side=tk.TOP, pady=(0, 5))
+        
+        # Container para os botões de conversão
+        btns_container = tk.Frame(btn_frame2)
+        btns_container.pack(fill=tk.X)
+        
+        self.convert_linear_btn = tk.Button(btns_container, 
+                                           text="CONVERTER LINEAR\n(Lineariza ciclos G73-G89)", 
+                                           command=self.convert_linear, 
+                                           font=('Helvetica', 10, 'bold'),
+                                           bg='lightgreen',
+                                           activebackground='#90EE90',
+                                           relief=tk.RAISED,
+                                           bd=3,
+                                           height=3)
+        self.convert_linear_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.BOTH, expand=True)
+        
+        self.convert_mach3_btn = tk.Button(btns_container, 
+                                          text="CONVERTER MACH3\n(Remove parâmetro K)", 
+                                          command=self.convert_mach3, 
+                                          font=('Helvetica', 10, 'bold'),
+                                          bg='lightblue',
+                                          activebackground='#87CEEB',
+                                          relief=tk.RAISED,
+                                          bd=3,
+                                          height=3)
+        self.convert_mach3_btn.pack(side=tk.LEFT, padx=5, pady=5, fill=tk.BOTH, expand=True)
 
     def load_file(self):
         filepath = filedialog.askopenfilename(filetypes=[("G-code files", "*.nc *.gcode *.txt"), ("All files", "*.*")])
@@ -341,7 +448,8 @@ class GCodeConverterApp:
             self.text_in.delete('1.0', tk.END)
             self.text_in.insert('1.0', f.read())
 
-    def convert(self):
+    def convert_linear(self):
+        """Converte G-code linearizando ciclos G8x."""
         input_text = self.text_in.get('1.0', tk.END)
         if not input_text.strip():
             messagebox.showwarning("Aviso", "A caixa de texto de entrada está vazia.")
@@ -349,6 +457,18 @@ class GCodeConverterApp:
         output_text = convert_gcode_text(input_text)
         self.text_out.delete('1.0', tk.END)
         self.text_out.insert('1.0', output_text)
+        messagebox.showinfo("Sucesso", "Conversão Linear concluída!\nCiclos G8x foram linearizados.")
+    
+    def convert_mach3(self):
+        """Converte G-code para Mach3: remove parâmetro K e adiciona rotinas de segurança."""
+        input_text = self.text_in.get('1.0', tk.END)
+        if not input_text.strip():
+            messagebox.showwarning("Aviso", "A caixa de texto de entrada está vazia.")
+            return
+        output_text = convert_gcode_for_mach3(input_text)
+        self.text_out.delete('1.0', tk.END)
+        self.text_out.insert('1.0', output_text)
+        messagebox.showinfo("Sucesso", "Conversão Mach3 concluída!\nParâmetro K removido e rotinas de segurança adicionadas.")
 
     def save_file(self):
         output_text = self.text_out.get('1.0', tk.END)
